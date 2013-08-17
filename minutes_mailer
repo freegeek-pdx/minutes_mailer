@@ -6,6 +6,9 @@ import argparse
 import datetime
 import sys
 import os.path
+import getpass
+import ConfigParser
+
 from request_tracker import RT, RT_URL, send_email, load_config
 
 def loadconfig():
@@ -13,25 +16,54 @@ def loadconfig():
     config = load_config('/etc/mm.cfg')
     rtconf = config['rt']
     mail = config['mail']
-    global RT_HOST, RT_USER, RT_PASSWORD, RT_QUEUE, RT_FROM, RT_TO, MAILHOST
+    # get global values for RT etc
+    global RT_HOST, RT_USER, RT_PASSWORD, RT_QUEUE, RT_FROM,  MAILHOST
     RT_HOST = 'todo.freegeek.org'
     RT_USER = rtconf['rt_user']
     RT_PASSWORD = rtconf['rt_password']
     MAILHOST = mail['mail_host']
     RT_QUEUE = rtconf['rt_queue']
-    MAIL_FROM = mail['rt_from']
-    MAIL_TO= mail['rt_to']
-    MAILHOST = mail['mail_host']
+    # define mail queues
+    global TECHNOCRATS_LIST, MINUTES_LIST
+    TECHNOCRATS_LIST = "technocrats@freegeek.org"
+    MINUTES_LIST = "minutes@freegeek.org"
+    # get from address and path to minutes
+    global MAIL_FROM, MINUTES_PATH
     local_conf = os.path.expanduser('~/.minutes_mailer')
     if os.path.isfile(local_conf)
-        local_config=load_config(local_conf)
-        try:
-            local_mail = local_config['mail']
-            if local_mail['email']:
-                MAIL_FROM = local_mail['email']
-        except:
-            pass
+        MAIL_FROM, MINUTES_PATH = get_local_conf(local_conf)
+    else:
+        create_config(local_conf)
+        sys.exit(1)
 
+
+def create_config(config):
+    '''create lcoal config file'''
+    with open(config, w) as f:
+     contents = [
+        '[config]',
+        '# email that can post to ' +  TECHNOCRATS_LIST,
+        'email = ' + getpass.getuser() + '@freegeek.org',
+        '# uncomment the next line to specify the directory where  minutes are normally stored (recommended)',
+        '# path = [directory goes here, relative to ~/]'
+        ]
+    f.writelines(contents)
+    print('No local configuration found')
+    print('Please edit ' + config + ' to your satisfaction') 
+
+
+def get_local_conf(config_file):
+    '''Reads in configuration file.'''
+    local_config = load_config(config_file)
+    config=local_config['config']
+    if not config['email']:
+        print('a valid email must be supplied in ' + config_file)
+    elif not config['path']:
+        config['path'] = None
+    return config['email'], config['path'] 
+            
+
+def read_options()
     '''read command line options'''
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
@@ -40,6 +72,8 @@ def loadconfig():
     group.add_argument("-m", "--send-minutes", 
             help="Send final minutes. Supply ticket number as an argument",
             action="store")
+    group.add_argument("-n", "--new-file", help="create a blank minutes file", 
+            action="store_true")
     parser.add_argument("-D", "--date", 
             help="date of minutes(if not today or 1 week ago)", 
             action="store")
@@ -53,6 +87,8 @@ def loadconfig():
             args.date = 'lastweek'
     if args.send_draught:
         action = 'draught'
+    elif args.new_file:
+        action ='new'
     elif  args.send_minutes:
         action = args.send_minutes
     if args.file:
@@ -60,13 +96,21 @@ def loadconfig():
     else:
         mfile = None
     return action, args.date, mfile
+ 
+
+def create_new_minutes_file:
+    #TODO
+    pass
 
 
 def get_file(date):
     #TODO get default filename
+    pass
+
 
 def load_file(mfile):
     # TODO load file and return file object as string?
+    pass
 
 
 def setup_object():
@@ -75,12 +119,14 @@ def setup_object():
     rt_object.login()
     return rt_object
 
+
 def send_draught(date, mfile):
     '''send draught minutes'''
    # TODO determine date, load file, contstruct subject line, send email
     pass
 
-def  send_final(action, date, mfile):
+
+def send_final(action, date, mfile):
     '''send final minutes'''
     ticket = setup_object()
     try:
@@ -92,15 +138,44 @@ def  send_final(action, date, mfile):
     except:
         print('could not connect to RT. \
             Check your network connection and try again')
-        sys.exit(3)
+   sys.exit(3)
    # TODO determine date, load file, contstruct subject line
    # TODO email minutes list, add comment and closer ticket (via + done email)
+
+
+def get_date(when):
+    '''return the date for n weeks ago'''
+    if when == 'today':
+        return today
+        return weeks_ago(today, 0)
+    elif when == 'last week'
+        return weeks_ago(today, 1)
+    else
+        return weeks_ago(today, when)
+
+def weeks_ago(weeks):
+    '''Return a datetime object that represents the date of the Friday 
+    n weeks ago for a week running friday to thursday. 
+    So that 0 = today or last Friday if not Friday, 1 = last Friday 
+    if its Friday, otherwise a firday at least a week ago etc'''
+    days = weeks * 7
+    today = datetime.datetime.today()
+    # weekday of nearest Friday
+    weekday = datetime.date.weekday(today) % 4
+    timedelta = datetime.timedelta(weekday)
+    date = today - timedelta
+    # calculate for days ago
+    timedelta = datetime.timedelta(days)
+    return date - timedelta
+
 
 if __name__ == "__main__":
     loadconfig()
     ACTION, DATE, MINUTESFILE = read_options()
     if ACTION == 'draught':
         send_draught(DATE, MINUTESFILE)
+    elif ACTION =='new':
+        create_new_minutes_file()
     else:
         # send final minutes, action should contain ticket number
         send_final(ACTION, DATE, MINUTESFILE)
