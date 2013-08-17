@@ -8,7 +8,6 @@ import sys
 import os.path
 import getpass
 import ConfigParser
-
 from request_tracker import RT, RT_URL, send_email, load_config
 
 def loadconfig():
@@ -126,29 +125,32 @@ def send_draught(date, mfile):
     pass
 
 
-def send_final(action, date, mfile):
+def send_final(ticketno, date, mfile):
     '''send final minutes'''
     ticket = setup_object()
     try:
-        # note action contains ticket number
-        isvalid = ticket.is_valid_ticket(RT_QUEUE, action)
+        isvalid = ticket.is_valid_ticket(RT_QUEUE, ticketno)
         if not isvalid:
             print('Not a valid ticket')
             sys.exit(1)
     except:
         print('could not connect to RT. \
             Check your network connection and try again')
-   sys.exit(3)
-   # TODO determine date, load file, contstruct subject line
-   # TODO email minutes list, add comment and closer ticket (via + done email)
-
+        sys.exit(3)
+    # TODO check if the ticket looks like minutes
+    date = get_date(date)
+    subject = 'Technocrats Minutes ' + str(date)
+    # TODO load file + construct msg
+    send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg)
+    ticket.add_comment(ticketno, msg)
+    ticket.set_status(ticketno, 'resolved')
 
 def get_date(when):
     '''return the date for n weeks ago'''
     if when == 'today':
         return today
         return weeks_ago(today, 0)
-    elif when == 'last week'
+    elif when == 'lastweek'
         return weeks_ago(today, 1)
     else
         return weeks_ago(today, when)
