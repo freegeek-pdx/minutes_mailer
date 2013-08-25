@@ -108,9 +108,9 @@ def get_file(date):
 
 
 def load_file(mfile):
-    # TODO load file and return file object as string?
-    pass
-
+    with open(mfile,'rU') as f:
+        contents = f.read()
+    return contents
 
 def setup_object():
     '''create request tracker opject and login'''
@@ -121,8 +121,10 @@ def setup_object():
 
 def send_draught(date, mfile):
     '''send draught minutes'''
-   # TODO determine date, load file, contstruct subject line, send email
-    pass
+    date = get_date(date)
+    subject = 'DRAFT: Technocrats Minutes ' + str(date)
+    msg = load_file(mfile)
+    send_email(MAILHOST, MAIL_FROM, TECHNOCRATS_LIST, subject, msg)
 
 
 def send_final(ticketno, date, mfile):
@@ -140,7 +142,7 @@ def send_final(ticketno, date, mfile):
     # TODO check if the ticket looks like minutes
     date = get_date(date)
     subject = 'Technocrats Minutes ' + str(date)
-    # TODO load file + construct msg
+    msg = load_file(mfile)
     send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg)
     ticket.add_comment(ticketno, msg)
     ticket.set_status(ticketno, 'resolved')
