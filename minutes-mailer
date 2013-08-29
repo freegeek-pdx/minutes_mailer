@@ -163,7 +163,7 @@ def weeks_ago(weeks):
     So that 0 = today or last Friday if not Friday, 1 = last Friday 
     if its Friday, otherwise a firday at least a week ago etc'''
     days = weeks * 7
-    today = datetime.datetime.today()
+    today = datetime.date.today()
     # weekday of nearest Friday
     weekday = datetime.date.weekday(today) % 4
     timedelta = datetime.timedelta(weekday)
