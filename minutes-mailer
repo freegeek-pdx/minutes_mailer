@@ -29,7 +29,7 @@ def loadconfig():
     # get from address and path to minutes
     global MAIL_FROM, MINUTES_PATH
     local_conf = os.path.expanduser('~/.minutes_mailer')
-    if os.path.isfile(local_conf)
+    if os.path.isfile(local_conf):
         MAIL_FROM, MINUTES_PATH = get_local_conf(local_conf)
     else:
         create_config(local_conf)
@@ -62,7 +62,7 @@ def get_local_conf(config_file):
     return config['email'], config['path'] 
             
 
-def read_options()
+def read_options():
     '''read command line options'''
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
@@ -97,7 +97,7 @@ def read_options()
     return action, args.date, mfile
  
 
-def create_new_minutes_file:
+def create_new_minutes_file():
     #TODO
     pass
 
@@ -152,9 +152,9 @@ def get_date(when):
     if when == 'today':
         return today
         return weeks_ago(today, 0)
-    elif when == 'lastweek'
+    elif when == 'lastweek':
         return weeks_ago(today, 1)
-    else
+    else:
         return weeks_ago(today, when)
 
 def weeks_ago(weeks):
