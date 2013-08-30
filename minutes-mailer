@@ -7,6 +7,7 @@ import datetime
 import sys
 import os.path
 import getpass
+import re
 from request_tracker import RT, RT_URL, send_email, load_config
 
 def loadconfig():
@@ -151,11 +152,17 @@ def send_final(ticketno, date, mfile=None):
         if not isvalid:
             print('Not a valid ticket')
             sys.exit(1)
+        else:
+            subject = ticket.get_subject(ticketno)
+            if not match_minutes(subject):
+                print('the subject of ' + str(ticketno) + ' is ' + subject)
+                print("This does not look like the correct  ticket")
+                if not proceed():
+                    sys.exit(1)
     except:
         print('could not connect to RT. \
             Check your network connection and try again')
         sys.exit(3)
-    # TODO check if the ticket looks like minutes
     date = get_date(date)
     subject = 'Technocrats Minutes ' + str(date)
     if not mfile:
@@ -164,6 +171,28 @@ def send_final(ticketno, date, mfile=None):
     send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg)
     ticket.add_comment(ticketno, msg)
     ticket.set_status(ticketno, 'resolved')
+
+
+def match_minutes(subject):
+    '''checks to see if subject lines looks like minutes'''
+    match = re.compile('minutes', re.IGNORECASE)
+    if match.search(subject):
+        return True
+    else:
+        return False
+
+
+def proceed(warning=None):
+    '''get a yes no answer, true if yes'''
+    print(warning + ' Proceed[Y/N]?')
+    answer =  sys.stdin.read(1)
+    if answer == 'y' or answer == 'Y':
+        return True
+    elif answer == 'n' or answer == 'N':
+        return False
+    else:
+        return proceed(warning)
+
 
 def get_date(when):
     '''return the date for n weeks ago'''
