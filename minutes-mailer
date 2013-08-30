@@ -7,7 +7,6 @@ import datetime
 import sys
 import os.path
 import getpass
-import ConfigParser
 from request_tracker import RT, RT_URL, send_email, load_config
 
 def loadconfig():
@@ -16,16 +15,18 @@ def loadconfig():
     rtconf = config['rt']
     mail = config['mail']
     # get global values for RT etc
-    global RT_HOST, RT_USER, RT_PASSWORD, RT_QUEUE, RT_FROM,  MAILHOST
-    RT_HOST = 'todo.freegeek.org'
+    global RT_HOST, RT_USER, RT_PASSWORD, RT_QUEUE, MAILHOST
+    RT_HOST = rtconf['rt_host']
     RT_USER = rtconf['rt_user']
     RT_PASSWORD = rtconf['rt_password']
     MAILHOST = mail['mail_host']
     RT_QUEUE = rtconf['rt_queue']
-    # define mail queues
     global TECHNOCRATS_LIST, MINUTES_LIST
-    TECHNOCRATS_LIST = "technocrats@freegeek.org"
-    MINUTES_LIST = "minutes@freegeek.org"
+    TECHNOCRATS_LIST = mail['rt_queue_email']
+    MINUTES_LIST = mail['minutes_list']
+    global MEETINGDAY
+    meeting = config['meeting']
+    MEETINGDAY = meeting['day']
     # get from address and path to minutes
     global MAIL_FROM, MINUTES_PATH
     local_conf = os.path.expanduser('~/.minutes_mailer')
@@ -35,26 +36,25 @@ def loadconfig():
         create_config(local_conf)
         sys.exit(1)
 
-
 def create_config(config):
-    '''create lcoal config file'''
-    with open(config, w) as f:
-     contents = [
+    '''create local config file'''
+    print('No local configuration found...creating')
+    with open(config, 'w') as f:
+        contents = [
         '[config]',
         '# email that can post to ' +  TECHNOCRATS_LIST,
         'email = ' + getpass.getuser() + '@freegeek.org',
-        '# uncomment the next line to specify the directory where  minutes are normally stored (recommended)',
+        '# uncomment the next line to specify the directory where minutes are normally stored (recommended)',
         '# path = [directory goes here, relative to ~/]'
         ]
     f.writelines(contents)
-    print('No local configuration found')
     print('Please edit ' + config + ' to your satisfaction') 
 
 
 def get_local_conf(config_file):
     '''Reads in configuration file.'''
     local_config = load_config(config_file)
-    config=local_config['config']
+    config = local_config['config']
     if not config['email']:
         print('a valid email must be supplied in ' + config_file)
     elif not config['path']:
@@ -74,7 +74,7 @@ def read_options():
     group.add_argument("-n", "--new-file", help="create a blank minutes file", 
             action="store_true")
     parser.add_argument("-D", "--date", 
-            help="date of minutes(if not today or 1 week ago)", 
+            help="date of minutes. Not normally needed unless the minutes are seent out more than a week late", 
             action="store")
     parser.add_argument("-f", "--file", 
             help="file containing minutes", action="store")
@@ -87,7 +87,7 @@ def read_options():
     if args.send_draught:
         action = 'draught'
     elif args.new_file:
-        action ='new'
+        action = 'new'
     elif  args.send_minutes:
         action = args.send_minutes
     if args.file:
@@ -98,16 +98,30 @@ def read_options():
  
 
 def create_new_minutes_file():
-    #TODO
-    pass
+    '''creates a blank minutes file'''
+    date = get_date('today')
+    minutes_file = 'minut tes' +  '.' + str(date)
+    if MINUTES_PATH:
+        minutes_file = MINUTES_PATH + '/' + file
+    if not os.path.exists(minutes_file):
+        open(file,'a').close()
+        print('Created ' + minutes_file)
+        return True
+    else:
+        print(minutes_file + ' already exists!')
+        return False
 
 
 def get_file(date):
-    #TODO get default filename
-    pass
+    '''returns default file name give date'''
+    minutes_file = 'minutes' +  '.' + str(date)
+    if MINUTES_PATH:
+        minutes_file = MINUTES_PATH + '/' + file
+    return minutes_file
 
 
 def load_file(mfile):
+    '''load file contents and return them as string'''
     with open(mfile,'rU') as f:
         contents = f.read()
     return contents
@@ -119,15 +133,17 @@ def setup_object():
     return rt_object
 
 
-def send_draught(date, mfile):
+def send_draught(date, mfile=None):
     '''send draught minutes'''
     date = get_date(date)
     subject = 'DRAFT: Technocrats Minutes ' + str(date)
+    if not mfile:
+        mfile = get_file(date)
     msg = load_file(mfile)
     send_email(MAILHOST, MAIL_FROM, TECHNOCRATS_LIST, subject, msg)
 
 
-def send_final(ticketno, date, mfile):
+def send_final(ticketno, date, mfile=None):
     '''send final minutes'''
     ticket = setup_object()
     try:
@@ -142,6 +158,8 @@ def send_final(ticketno, date, mfile):
     # TODO check if the ticket looks like minutes
     date = get_date(date)
     subject = 'Technocrats Minutes ' + str(date)
+    if not mfile:
+        mfile = get_file(date)
     msg = load_file(mfile)
     send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg)
     ticket.add_comment(ticketno, msg)
@@ -149,23 +167,25 @@ def send_final(ticketno, date, mfile):
 
 def get_date(when):
     '''return the date for n weeks ago'''
+    # calculate the date 
     if when == 'today':
-        return today
-        return weeks_ago(today, 0)
+        return weeks_ago(0, MEETINGDAY)
     elif when == 'lastweek':
-        return weeks_ago(today, 1)
+        return weeks_ago(1, MEETINGDAY)
     else:
-        return weeks_ago(today, when)
+        # assume a date was specified and just return it
+        # should only be the case with late minutes
+        return when
 
-def weeks_ago(weeks):
-    '''Return a datetime object that represents the date of the Friday 
-    n weeks ago for a week running friday to thursday. 
-    So that 0 = today or last Friday if not Friday, 1 = last Friday 
-    if its Friday, otherwise a firday at least a week ago etc'''
+
+def weeks_ago(weeks, weekdayno):
+    '''Return a datetime object that represents the date of the day 
+    n weeks ago. 0 = today or the last occurence of  that day
+    1 = last week etc '''
     days = weeks * 7
     today = datetime.date.today()
-    # weekday of nearest Friday
-    weekday = datetime.date.weekday(today) % 4
+    # weekday of nearest day
+    weekday = datetime.date.weekday(today) % weekdayno
     timedelta = datetime.timedelta(weekday)
     date = today - timedelta
     # calculate for days ago
@@ -178,16 +198,9 @@ if __name__ == "__main__":
     ACTION, DATE, MINUTESFILE = read_options()
     if ACTION == 'draught':
         send_draught(DATE, MINUTESFILE)
-    elif ACTION =='new':
+    elif ACTION == 'new':
         create_new_minutes_file()
     else:
         # send final minutes, action should contain ticket number
         send_final(ACTION, DATE, MINUTESFILE)
 
-
-'''
-================================================================================
-1807  mailx -s 'DRAFT: Minutes 2013-06-26' -r 'paulm@freegeek.org'  technocrats@freegeek.org <  minutes.20130628
- 3367  mailx -s 'Technocrats  Minutes 2013-07-19' -r 'paulm@freegeek.org'  minutes@freegeek.org <  Documents/technocrats/technocrats_minutes.20130719
- 3383  mailx -s 'Technocrats  Minutes 2013-07-19' -r 'paulm@freegeek.org'  done+36615@todo.freegeek.org <  Documents/technocrats/technocrats_minutes.20130719
-'''
