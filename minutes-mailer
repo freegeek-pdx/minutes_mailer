@@ -10,6 +10,12 @@ import getpass
 import re
 from request_tracker import RT, RT_URL, send_email, load_config
 
+class Error(Exception):
+    '''Base class for exceptions '''
+    def __init__(self, msg, exitval):
+        self.msg = msg
+        self.exitval = exitval
+
 def loadconfig():
     '''loads configuration file'''
     config = load_config('/etc/mm.cfg')
@@ -31,34 +37,46 @@ def loadconfig():
     # get from address and path to minutes
     global MAIL_FROM, MINUTES_PATH
     local_conf = os.path.expanduser('~/.minutes_mailer')
-    if os.path.isfile(local_conf):
-        MAIL_FROM, MINUTES_PATH = get_local_conf(local_conf)
-    else:
+    if  not os.path.isfile(local_conf):
         create_config(local_conf)
-        sys.exit(1)
+    MAIL_FROM, MINUTES_PATH = get_local_conf(local_conf)
 
 def create_config(config):
     '''create local config file'''
     print('No local configuration found...creating')
+    email =  getpass.getuser() + '@freegeek.org',
+    if not yes_no('Is this your email' + email):
+        email =  raw_input('Enter your email: ')
+    print('Enter the directory where you wish to store minutes')
+    print('This can be an absolute path or relative to your home dir')
+    print("leave blank if you store them in your home directory or don't care") 
+    path = raw_input('Enter path: ')
+    if not path:
+        pathline = '#path = [directory goes here, relative to ~/]'
+    else:
+        pathline = 'path' + path
     with open(config, 'w') as f:
         contents = [
         '[config]',
         '# email that can post to ' +  TECHNOCRATS_LIST,
-        'email = ' + getpass.getuser() + '@freegeek.org',
+        'email = ' + email
         '# uncomment the next line to specify the directory where minutes are normally stored (recommended)',
-        '# path = [directory goes here, relative to ~/]'
         ]
-    f.writelines(contents)
-    print('Please edit ' + config + ' to your satisfaction') 
+        try: 
+            f.write('\n'.join(contents))
+            print('Local configuration file'  + config + 'written') 
+        except IOError:
+            print('Could not write to Local configuration file'  + config)
+            sys.exit(73)
 
 
 def get_local_conf(config_file):
     '''Reads in configuration file.'''
     local_config = load_config(config_file)
     config = local_config['config']
-    if not config['email']:
+    if not 'email' in config:
         print('a valid email must be supplied in ' + config_file)
-    elif not config['path']:
+    elif not 'path' in config:
         config['path'] = None
     return config['email'], config['path'] 
             
@@ -66,7 +84,7 @@ def get_local_conf(config_file):
 def read_options():
     '''read command line options'''
     parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = minutes_file[0:2] == '~/':parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-d", "--send-draught", 
             help="email draught minutes", action="store_true")
     group.add_argument("-m", "--send-minutes", 
@@ -101,24 +119,31 @@ def read_options():
 def create_new_minutes_file():
     '''creates a blank minutes file'''
     date = get_date('today')
-    minutes_file = 'minut tes' +  '.' + str(date)
-    if MINUTES_PATH:
-        minutes_file = MINUTES_PATH + '/' + file
+    minutes_file = get_file(date)
     if not os.path.exists(minutes_file):
-        open(file,'a').close()
-        print('Created ' + minutes_file)
-        return True
+        try:
+            open(minutes_file,'a').close()
+            print('Created ' + minutes_file)
+            return True
+        except IOError:
+            print('Could not write to '  +  minutes_file)
+            sys.exit(73)
     else:
-        print(minutes_file + ' already exists!')
-        return False
+        raise Error("Minutes files already exists!", 1)
+
 
 
 def get_file(date):
-    '''returns default file name give date'''
+    '''returns default file name + path given date(time object)'''
     minutes_file = 'minutes' +  '.' + str(date)
     if MINUTES_PATH:
-        minutes_file = MINUTES_PATH + '/' + file
-    return minutes_file
+        minutes_file = MINUTES_PATH + '/' + minutes_file
+    if minutes_file[0:2] == '~/':
+        return os.path.expanduser(minutes_file)
+    elif minutes_file[0] == '/':
+        return minutes_file
+    else:
+        return os.path.expanduser('~/' + minutes_file)
 
 
 def load_file(mfile):
@@ -130,8 +155,10 @@ def load_file(mfile):
 def setup_object():
     '''create request tracker opject and login'''
     rt_object = RT(RT_URL, RT_USER, RT_PASSWORD)
-    rt_object.login()
-    return rt_object
+    if not rt_object.login():
+        raise Error('Could not login to RT', 3)
+    else:
+        return rt_object
 
 
 def send_draught(date, mfile=None):
@@ -141,7 +168,8 @@ def send_draught(date, mfile=None):
     if not mfile:
         mfile = get_file(date)
     msg = load_file(mfile)
-    send_email(MAILHOST, MAIL_FROM, TECHNOCRATS_LIST, subject, msg)
+    if not send_email(MAILHOST, MAIL_FROM, TECHNOCRATS_LIST, subject, msg):
+        raise Error('Could not send draught minutes', 3)
 
 
 def send_final(ticketno, date, mfile=None):
@@ -150,27 +178,36 @@ def send_final(ticketno, date, mfile=None):
     try:
         isvalid = ticket.is_valid_ticket(RT_QUEUE, ticketno)
         if not isvalid:
-            print('Not a valid ticket')
-            sys.exit(1)
+            raise Error('Not a valid ticket', 1)
         else:
             subject = ticket.get_subject(ticketno)
             if not match_minutes(subject):
                 print('the subject of ' + str(ticketno) + ' is ' + subject)
                 print("This does not look like the correct  ticket")
-                if not proceed():
-                    sys.exit(1)
+                if not yes_no('Proceed'):
+                    raise Error('ticket mismatch, aborting.', 0)
     except:
-        print('could not connect to RT. \
-            Check your network connection and try again')
-        sys.exit(3)
+        raise('could not connect to RT. \
+            Check your network connection and try again', 3)
+        
     date = get_date(date)
     subject = 'Technocrats Minutes ' + str(date)
     if not mfile:
         mfile = get_file(date)
     msg = load_file(mfile)
-    send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg)
-    ticket.add_comment(ticketno, msg)
-    ticket.set_status(ticketno, 'resolved')
+    if not send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg):
+         raise Error("Could not send email to " + MINUTES_LIST, 3)
+     else:
+         print('sent minutes to ' + MINUTES_LIST)
+    if not ticket.add_comment(ticketno, msg):
+         raise Error ("Could not add minutes to ticket " + ticket no, 3)
+     else:    
+        print('added  minutes to ticket ' + ticketno)
+    if not ticket.set_status(ticketno, 'resolved')
+         raise Error ("Could resolve ticket " + ticket no, 3)
+     else:    
+        print('Resolved ticket ' + ticketno)
+        
 
 
 def match_minutes(subject):
@@ -182,16 +219,17 @@ def match_minutes(subject):
         return False
 
 
-def proceed(warning=None):
+def yes_no(warning=None):
     '''get a yes no answer, true if yes'''
-    print(warning + ' Proceed[Y/N]?')
+    print(warning + '[Y/N]?')
     answer =  sys.stdin.read(1)
     if answer == 'y' or answer == 'Y':
         return True
     elif answer == 'n' or answer == 'N':
         return False
     else:
-        return proceed(warning)
+        print 'please answer y[es] or [n]o'
+        return yes_no(warning)
 
 
 def get_date(when):
@@ -214,7 +252,7 @@ def weeks_ago(weeks, weekdayno):
     days = weeks * 7
     today = datetime.date.today()
     # weekday of nearest day
-    weekday = datetime.date.weekday(today) % weekdayno
+    weekday = datetime.date.weekday(today) % int(weekdayno)
     timedelta = datetime.timedelta(weekday)
     date = today - timedelta
     # calculate for days ago
@@ -223,13 +261,26 @@ def weeks_ago(weeks, weekdayno):
 
 
 if __name__ == "__main__":
-    loadconfig()
     ACTION, DATE, MINUTESFILE = read_options()
+    loadconfig()
     if ACTION == 'draught':
-        send_draught(DATE, MINUTESFILE)
+        try:
+            send_draught(DATE, MINUTESFILE)
+        except Error as error:
+            print error.msg
+            sys.exit(error.exitval)
+
     elif ACTION == 'new':
-        create_new_minutes_file()
+        try:
+            create_new_minutes_file()
+        except Error as error:
+            print error.msg
+            sys.exit(error.exitval)
     else:
         # send final minutes, action should contain ticket number
-        send_final(ACTION, DATE, MINUTESFILE)
-
+        try:
+            send_final(ACTION, DATE, MINUTESFILE)
+        except Error as error:
+            print error.msg
+            sys.exit(error.exitval)
+    sys.exit(0)
