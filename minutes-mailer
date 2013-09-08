@@ -8,7 +8,9 @@ import sys
 import os.path
 import getpass
 import re
-from request_tracker import RT, RT_URL, send_email, load_config
+import ConfigParser
+
+from request_tracker import RT, send_email, 
 
 class Error(Exception):
     '''Base class for exceptions '''
@@ -18,68 +20,89 @@ class Error(Exception):
 
 def loadconfig():
     '''loads configuration file'''
-    config = load_config('/etc/mm.cfg')
-    rtconf = config['rt']
-    mail = config['mail']
-    # get global values for RT etc
-    global RT_HOST, RT_USER, RT_PASSWORD, RT_QUEUE, MAILHOST
-    RT_HOST = rtconf['rt_host']
-    RT_USER = rtconf['rt_user']
-    RT_PASSWORD = rtconf['rt_password']
-    MAILHOST = mail['mail_host']
-    RT_QUEUE = rtconf['rt_queue']
-    global TECHNOCRATS_LIST, MINUTES_LIST
-    TECHNOCRATS_LIST = mail['rt_queue_email']
-    MINUTES_LIST = mail['minutes_list']
-    global MEETINGDAY
-    meeting = config['meeting']
-    MEETINGDAY = meeting['day']
-    # get from address and path to minutes
-    global MAIL_FROM, MINUTES_PATH
+    config = ConfigParser.SafeConfigParser()
+    config.read('/etc/mm.cfg')
+    rt = {}
+    rt['host'] = config.get('rt', 'rt_host')
+    rt['queue'] = config.get('rt', 'rt_queue')
+    mail = {}
+    mail['host'] = config.get('mail', 'host')
+    mail['minutes list'] = config.get('mail', 'minutes_list')
+    mail['queue'] = config.get('mail', 'rt_queue_email')
+    misc = {}
+    misc['meeting day'] = int(config.get('meeting', 'day'))
     local_conf = os.path.expanduser('~/.minutes_mailer')
     if  not os.path.isfile(local_conf):
         create_config(local_conf)
-    MAIL_FROM, MINUTES_PATH = get_local_conf(local_conf)
+    config.read(local_conf)
+    mail['email'] = config.get('mail', 'email')
+    if config.has_option('minutes','path'):
+        misc['minutes path'] = config.get('minutes','path')
+    else:
+        misc['minutes path'] = None
+    rt['user'] = config.get('rt', 'rtuser')
+    if config.has_option('rt','nopassword'):
+        rt['nopassword'] = True
+    return rt, mail, misc
 
-def create_config(config):
+
+  def create_config(configfile):
     '''create local config file'''
     print('No local configuration found...creating')
+    config = ConfigParser.SafeConfigParser()
+    email, path, rtuser, rtpath = get_user_config()
+    config.add_section('minutes')
+    if path:
+        config.set('minutes', 'path', path)
+    config.add_section('mail')
+    config.set('mail', 'email', email)
+    config.add_section('rt')
+    config.set('rt', 'rtuser', rtuser)
+    if rtpass:
+        set_password('rt', rtuser, rtpass)
+    else:
+        config.set('rt', 'nopassword', true)
+    try:
+        with open(configfile, 'wb') as cfile:
+            config.write(cfile)
+    except ConfigParser.Error as error:
+        print('cound not write config file. Eror:')
+        sysexit(error.args, 73)
+    # add comment about path if not set
+    if not path:
+        add_path_comment(configfile)
+    else:
+        print('Local configuration file'  + config + 'created')
+
+def get_user_config():
     email =  getpass.getuser() + '@freegeek.org',
     if not yes_no('Is this your email' + email):
         email =  raw_input('Enter your email: ')
-    print('Enter the directory where you wish to store minutes')
-    print('This can be an absolute path or relative to your home dir')
-    print("leave blank if you store them in your home directory or don't care") 
+    print(  "Enter the directory where you wish to store minutes\n"  \
+        "This can be an absolute path or relative to your home dir\n" \
+        "leave blank if you store them in your home directory or don't care") 
     path = raw_input('Enter path: ')
-    if not path:
-        pathline = '#path = [directory goes here, relative to ~/]'
-    else:
-        pathline = 'path' + path
-    with open(config, 'w') as f:
-        contents = [
-        '[config]',
-        '# email that can post to ' +  TECHNOCRATS_LIST,
-        'email = ' + email
-        '# uncomment the next line to specify the directory where minutes are normally stored (recommended)',
-        ]
-        try: 
-            f.write('\n'.join(contents))
-            print('Local configuration file'  + config + 'written') 
-        except IOError:
-            print('Could not write to Local configuration file'  + config)
-            sys.exit(73)
+    rtuser = raw_input('Please enter your RT user')
+    print('Please enter the password associated with this account\n' \
+        'This will be stored in your keyring\n' \
+        'enter a blank line if you wish to be prompted everytime instead')
+    rtpass = getpass.getpass()
+    return email, path, rtuser, rtpass
 
+def add_path_comment(configfilei, slist):
+        with open(configfile, 'a') as f:
+            contents = [
+            '# uncomment the next line to specify the directory where minutes are normally stored (recommended)',
+            '#path = [directory goes here, relative to ~/]'
+            ]
+            try: 
+                f.write('\n'.join(contents))
+                print('Local configuration file'  + config + 'created') 
+            except IOError:
+                error = 'Could not write to local configuration file: ' \
+                        + config
+                sysexit(error, 73)
 
-def get_local_conf(config_file):
-    '''Reads in configuration file.'''
-    local_config = load_config(config_file)
-    config = local_config['config']
-    if not 'email' in config:
-        print('a valid email must be supplied in ' + config_file)
-    elif not 'path' in config:
-        config['path'] = None
-    return config['email'], config['path'] 
-            
 
 def read_options():
     '''read command line options'''
@@ -116,23 +139,6 @@ def read_options():
     return action, args.date, mfile
  
 
-def create_new_minutes_file():
-    '''creates a blank minutes file'''
-    date = get_date('today')
-    minutes_file = get_file(date)
-    if not os.path.exists(minutes_file):
-        try:
-            open(minutes_file,'a').close()
-            print('Created ' + minutes_file)
-            return True
-        except IOError:
-            print('Could not write to '  +  minutes_file)
-            sys.exit(73)
-    else:
-        raise Error("Minutes files already exists!", 1)
-
-
-
 def get_file(date):
     '''returns default file name + path given date(time object)'''
     minutes_file = 'minutes' +  '.' + str(date)
@@ -152,63 +158,33 @@ def load_file(mfile):
         contents = f.read()
     return contents
 
-def setup_object():
+def setup_object(url, user, password):
     '''create request tracker opject and login'''
-    rt_object = RT(RT_URL, RT_USER, RT_PASSWORD)
+    rt_object = RT(url, user, password)
     if not rt_object.login():
         raise Error('Could not login to RT', 3)
     else:
         return rt_object
 
+def get_rtconf(rtconf):
+    '''get rtconfig'''
+    rturl = 'http://' + rtconf['host'] + '/REST/1.0/'
+    rtuser = rtconf['user']
+    if 'nopassword' in rtconf:
+        rtpass = getpass.getpass('Enter RT password']
+    else:
+        rtpass = get_password('rt', rtuser)
+   return rturl, rtqueue, rtuser, rtpass
 
-def send_draught(date, mfile=None):
-    '''send draught minutes'''
-    date = get_date(date)
-    subject = 'DRAFT: Technocrats Minutes ' + str(date)
-    if not mfile:
-        mfile = get_file(date)
-    msg = load_file(mfile)
-    if not send_email(MAILHOST, MAIL_FROM, TECHNOCRATS_LIST, subject, msg):
-        raise Error('Could not send draught minutes', 3)
+#TODO IMPLEMENT
+def get_password(section, user):
+    '''get a password from users keyring'''
+    pass
 
-
-def send_final(ticketno, date, mfile=None):
-    '''send final minutes'''
-    ticket = setup_object()
-    try:
-        isvalid = ticket.is_valid_ticket(RT_QUEUE, ticketno)
-        if not isvalid:
-            raise Error('Not a valid ticket', 1)
-        else:
-            subject = ticket.get_subject(ticketno)
-            if not match_minutes(subject):
-                print('the subject of ' + str(ticketno) + ' is ' + subject)
-                print("This does not look like the correct  ticket")
-                if not yes_no('Proceed'):
-                    raise Error('ticket mismatch, aborting.', 0)
-    except:
-        raise('could not connect to RT. \
-            Check your network connection and try again', 3)
-        
-    date = get_date(date)
-    subject = 'Technocrats Minutes ' + str(date)
-    if not mfile:
-        mfile = get_file(date)
-    msg = load_file(mfile)
-    if not send_email(MAILHOST, MAIL_FROM, MINUTES_LIST, subject, msg):
-         raise Error("Could not send email to " + MINUTES_LIST, 3)
-     else:
-         print('sent minutes to ' + MINUTES_LIST)
-    if not ticket.add_comment(ticketno, msg):
-         raise Error ("Could not add minutes to ticket " + ticket no, 3)
-     else:    
-        print('added  minutes to ticket ' + ticketno)
-    if not ticket.set_status(ticketno, 'resolved')
-         raise Error ("Could resolve ticket " + ticket no, 3)
-     else:    
-        print('Resolved ticket ' + ticketno)
-        
-
+#TODO IMPLEMENT
+def set_password(section, user, password):
+    '''set a password in users keyring'''
+    pass
 
 def match_minutes(subject):
     '''checks to see if subject lines looks like minutes'''
@@ -232,18 +208,25 @@ def yes_no(warning=None):
         return yes_no(warning)
 
 
-def get_date(when):
+def get_date(when, day):
     '''return the date for n weeks ago'''
     # calculate the date 
     if when == 'today':
-        return weeks_ago(0, MEETINGDAY)
+        return weeks_ago(0, day)
     elif when == 'lastweek':
-        return weeks_ago(1, MEETINGDAY)
+        return weeks_ago(1, day)
     else:
         # assume a date was specified and just return it
         # should only be the case with late minutes
         return when
 
+def get_minutes_path(config):
+    '''get path form config if any'''
+    misc = config['misc']
+    if 'minutes path' in misc:
+        return misc['minutes path']
+    else:
+        return None
 
 def weeks_ago(weeks, weekdayno):
     '''Return a datetime object that represents the date of the day 
@@ -259,28 +242,111 @@ def weeks_ago(weeks, weekdayno):
     timedelta = datetime.timedelta(days)
     return date - timedelta
 
+def sysexit(message, exit_value):
+    print(message)
+    sys.exit(exit_val)
+
+
+def create_new_minutes_file(path = None):
+    '''creates a blank minutes file'''
+    day = get_day(config)
+    path  = get_minutes_path(config)
+    date = get_date('today', day)
+    minutes_file = get_file(date, path)
+    if not os.path.exists(minutes_file):
+        try:
+            open(minutes_file,'a').close()
+            print('Created ' + minutes_file)
+            return True
+        except IOError:
+            error = 'Could not write to '  +  minutes_file
+            sys.exit(error, 73)
+    else:
+        raise Error("Minutes files already exists!", 1)
+
+
+def send_draught(config, date, mfile=None):
+    '''send draught minutes'''
+    day = get_day(config)
+    path  = get_minutes_path(config)
+    date = get_date(date, day)
+    mail=config['mail']
+    subject = 'DRAFT: Technocrats Minutes ' + str(date)
+    if not mfile:
+        mfile = get_file(date, path)
+    msg = load_file(mfile)
+    if not send_email(mail['host'], mail['email'], mail['queue'], subject, msg):
+        raise Error('Could not send draught minutes', 3)
+
+
+def send_final(config, ticketno, date, mfile=None):
+    '''send final minutes'''
+    rtconf = config['rt']
+    mail = config['mail']
+    day = get_day(config)
+    path  = get_minutes_path(config)
+    rturl, rtqueue, rtuser, rtpass = get_rtconf(rtconf)
+    ticket = setup_object(rturl, rtuser, rtpass)
+    try:
+        isvalid = ticket.is_valid_ticket(rtqueue, ticketno)
+        if not isvalid:
+            raise Error('Not a valid ticket', 1)
+        else:
+            subject = ticket.get_subject(ticketno)
+            if not match_minutes(subject):
+                print('the subject of ' + str(ticketno) + ' is ' + subject)
+                print("This does not look like the correct  ticket")
+                if not yes_no('Proceed'):
+                    raise Error('ticket mismatch, aborting.', 0)
+    except:
+        raise('could not connect to RT. \
+            Check your network connection and try again', 3)
+    date = get_date(date, day)
+    subject = 'Technocrats Minutes ' + str(date)
+    if not mfile:
+        mfile = get_file(date, path)
+    msg = load_file(mfile)
+    minuteslist = mail['minute list']
+    if not send_email(mail['host'], mail['email'], minuteslist, 
+            subject, msg):
+         raise Error("Could not send email to " + minutelist, 3)
+     else:
+         print('sent minutes to ' + minuteslist)
+    if not ticket.add_comment(ticketno, msg):
+         raise Error ("Could not add minutes to ticket " + ticket no, 3)
+     else:    
+        print('added  minutes to ticket ' + ticketno)
+    if not ticket.set_status(ticketno, 'resolved')
+         raise Error ("Could resolve ticket " + ticket no, 3)
+     else:    
+        print('Resolved ticket ' + ticketno)
+        
 
 if __name__ == "__main__":
-    ACTION, DATE, MINUTESFILE = read_options()
-    loadconfig()
-    if ACTION == 'draught':
+    action, date, minutesfile = read_options()
+    # load config as dictionaries
+    rt, mail, misc = loadconfig()
+    config = {'rt' : rt , 'mail' : mail, 'misc', misc}
+    if ['minutes path']
+    if action == 'new':
         try:
-            send_draught(DATE, MINUTESFILE)
+            create_new_minutes_file(config)
         except Error as error:
-            print error.msg
-            sys.exit(error.exitval)
+            sysexit(error.msg, error.exitval)
 
-    elif ACTION == 'new':
+    elif action == 'draught':
         try:
-            create_new_minutes_file()
+            send_draught(config, date, minutesfile)
         except Error as error:
-            print error.msg
-            sys.exit(error.exitval)
-    else:
+            sysexit(error.msg, error.exitval)
+        else:
         # send final minutes, action should contain ticket number
         try:
-            send_final(ACTION, DATE, MINUTESFILE)
+            send_final(config, action, date, minutesfile)
         except Error as error:
-            print error.msg
-            sys.exit(error.exitval)
-    sys.exit(0)
+            sysexit(error.msg, error.exitval)
+
+    sys.exit(0)  
+    
+
+
