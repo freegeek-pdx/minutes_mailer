@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-'''send techoncrats minutes'''
+'''send technocrats minutes'''
 
 from __future__ import absolute_import, print_function, unicode_literals
 import argparse
@@ -9,12 +9,15 @@ import os.path
 import getpass
 import re
 import ConfigParser
-
-from request_tracker import RT, send_email, 
+import smtplib
+import keyring
+from email.mime.text import MIMEText
+from request_tracker import RT
 
 class Error(Exception):
     '''Base class for exceptions '''
     def __init__(self, msg, exitval):
+        Exception.__init__(self, msg)
         self.msg = msg
         self.exitval = exitval
 
@@ -26,16 +29,19 @@ def loadconfig():
     rt['host'] = config.get('rt', 'rt_host')
     rt['queue'] = config.get('rt', 'rt_queue')
     mail = {}
-    mail['host'] = config.get('mail', 'host')
     mail['minutes list'] = config.get('mail', 'minutes_list')
     mail['queue'] = config.get('mail', 'rt_queue_email')
     misc = {}
     misc['meeting day'] = int(config.get('meeting', 'day'))
     local_conf = os.path.expanduser('~/.minutes_mailer')
     if  not os.path.isfile(local_conf):
+        print('No local configuration found...creating')
         create_config(local_conf)
     config.read(local_conf)
     mail['email'] = config.get('mail', 'email')
+    mail['host'] = config.get('mail', 'host')
+    if config.has_option('mail','nopassword'):
+        mail['nopassword'] = True
     if config.has_option('minutes','path'):
         misc['minutes path'] = config.get('minutes','path')
     else:
@@ -46,77 +52,113 @@ def loadconfig():
     return rt, mail, misc
 
 
-  def create_config(configfile):
+def create_config(configfile):
     '''create local config file'''
-    print('No local configuration found...creating')
     config = ConfigParser.SafeConfigParser()
-    email, path, rtuser, rtpath = get_user_config()
+    userconf = get_user_config()
     config.add_section('minutes')
-    if path:
-        config.set('minutes', 'path', path)
+    if userconf['path']:
+        config.set('minutes', 'path', userconf['path'])
     config.add_section('mail')
-    config.set('mail', 'email', email)
-    config.add_section('rt')
-    config.set('rt', 'rtuser', rtuser)
-    if rtpass:
-        set_password('rt', rtuser, rtpass)
+    config.set('mail', 'host', userconf['mailhost'])
+    config.set('mail', 'email', userconf['email'])
+    if userconf['emailpass']:
+        set_password('email', userconf['email'], userconf['emailpass'])
     else:
-        config.set('rt', 'nopassword', true)
+        config.set('mail', 'nopassword', 'true')
+    if userconf['requires_ssl']:
+        config.set('mail', 'requires_ssl', 'true')
+    if userconf['requires_auth']:
+        config.set('mail', 'requires_auth', 'true')
+    config.add_section('rt')
+    config.set('rt', 'rtuser', userconf['rtuser'])
+    if userconf['rtpass']:
+        set_password('rt', userconf['rtuser'], userconf['rtpass'])
+    else:
+        config.set('rt', 'nopassword', 'true')
     try:
         with open(configfile, 'wb') as cfile:
             config.write(cfile)
-    except ConfigParser.Error as error:
+    except ConfigParser.Error as err:
         print('cound not write config file. Eror:')
-        sysexit(error.args, 73)
+        sysexit(err.args, 73)
     # add comment about path if not set
-    if not path:
+    if not userconf['path']:
         add_path_comment(configfile)
     else:
         print('Local configuration file'  + config + 'created')
 
 def get_user_config():
-    email =  getpass.getuser() + '@freegeek.org',
-    if not yes_no('Is this your email' + email):
-        email =  raw_input('Enter your email: ')
+    '''returns user config options as dict'''
+    conf = {}
+    conf['mailhost'] = 'mail.freegeek.org'
+    if not yes_or_no('use %s as your mailhost' %(conf['mailhost'])):
+        conf['mailhost'] = raw_input('Enter the correct host: ')
+        if yes_or_no('Does this host require you to log into send email?'):
+            conf['requires_auth'] = 'True'
+        else:
+            conf['requires_auth'] = None
+        if yes_or_no('Use SSL to connect'):
+            conf['requires_ssl'] = 'True'
+        else:
+            conf['requires_ssl'] = None
+    else:
+        conf['requires_ssl'] = 'True'
+        conf['requires_auth'] = 'True'
+    conf['email'] =  getpass.getuser() + '@freegeek.org',
+    if not yes_or_no('Is this your email %s' %(conf['email'])):
+        conf['email'] =  raw_input('Enter your email: ')
+    if conf['requires_auth']:
+        print('Please enter the password associated with this account\n' \
+        'This will be stored in your keyring\n' \
+        'enter a blank line if you wish to be prompted every time instead')
+        conf['emailpass'] = getpass.getpass()
+    else:
+        conf['emailpass'] = None
     print(  "Enter the directory where you wish to store minutes\n"  \
-        "This can be an absolute path or relative to your home dir\n" \
+        "This can be an absolute path or relative to your home directory\n" \
         "leave blank if you store them in your home directory or don't care") 
-    path = raw_input('Enter path: ')
-    rtuser = raw_input('Please enter your RT user')
+    conf['path'] = raw_input('Enter path: ')
+    conf['rtuser'] = raw_input('Please enter your RT user')
     print('Please enter the password associated with this account\n' \
         'This will be stored in your keyring\n' \
-        'enter a blank line if you wish to be prompted everytime instead')
-    rtpass = getpass.getpass()
-    return email, path, rtuser, rtpass
+        'enter a blank line if you wish to be prompted every time instead')
+    conf['rtpass'] = getpass.getpass()
+    return conf
 
-def add_path_comment(configfilei, slist):
-        with open(configfile, 'a') as f:
-            contents = [
-            '# uncomment the next line to specify the directory where minutes are normally stored (recommended)',
-            '#path = [directory goes here, relative to ~/]'
-            ]
-            try: 
-                f.write('\n'.join(contents))
-                print('Local configuration file'  + config + 'created') 
-            except IOError:
-                error = 'Could not write to local configuration file: ' \
-                        + config
-                sysexit(error, 73)
+def add_path_comment(configfile):
+    '''adds a comented out line about how to specify a path'''
+    with open(configfile, 'a') as f:
+        contents = [
+        '# uncomment the next line to specify the directory where ' \
+                'minutes are normally stored (recommended)',
+        '#path = [directory goes here, relative to ~/]'
+        ]
+        try: 
+            f.write('\n'.join(contents))
+            print('Local configuration file %s created' %(configfile)) 
+        except IOError:
+            err = ('Could not write to local configuration file: %s' 
+                    %(configfile)) 
+            sysexit(err, 73)
 
 
 def read_options():
     '''read command line options'''
     parser = argparse.ArgumentParser()
-    group = minutes_file[0:2] == '~/':parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-d", "--send-draught", 
             help="email draught minutes", action="store_true")
     group.add_argument("-m", "--send-minutes", 
             help="Send final minutes. Supply ticket number as an argument",
             action="store")
-    group.add_argument("-n", "--new-file", help="create a blank minutes file", 
-            action="store_true")
+    group.add_argument("-n", "--new-file", 
+            help="create a blank minutes file", action="store_true")
+    group.add_argument("-C", "--create-config", 
+            help="Create a config file", action="store_true")
     parser.add_argument("-D", "--date", 
-            help="date of minutes. Not normally needed unless the minutes are seent out more than a week late", 
+            help="date of minutes. Not normally needed unless the minutes' \
+                    'are sent out more than a week late", 
             action="store")
     parser.add_argument("-f", "--file", 
             help="file containing minutes", action="store")
@@ -132,18 +174,60 @@ def read_options():
         action = 'new'
     elif  args.send_minutes:
         action = args.send_minutes
+    elif args.create_config:
+        action = 'create_config'
     if args.file:
         mfile = args.file
     else:
         mfile = None
     return action, args.date, mfile
- 
 
-def get_file(date):
+def get_rtconf(rtconf):
+    '''get rtconfig'''
+    rturl = 'http://' + rtconf['host'] + '/REST/1.0/'
+    rtuser = rtconf['user']
+    rtqueue = rtconf['queue']
+    if 'nopassword' in rtconf:
+        rtpass = getpass.getpass('Enter RT password')
+    else:
+        rtpass = get_password('rt', rtuser)
+    return rturl, rtqueue, rtuser, rtpass
+
+def get_mailconf(mconf):
+    '''get mail config'''
+    email = mconf['email']
+    if 'nopassword' in mconf:
+        password = getpass.getpass('Enter email password')
+    else:
+        password = get_password('mail', email)
+    return email, password
+
+def get_password(section,  user):
+    '''get a password from users keyring'''
+    return keyring.get_password('minutes-mailer-' + section, user)
+
+def set_password(section, user, password):
+    '''set a password in users keyring'''
+    keyring.set_password('minutes-mailer-' + section, user, password)
+
+def get_day(conf):
+    '''get day from config'''
+    misc = conf['misc']
+    return misc['meeting day']
+
+def get_minutes_path(conf):
+    '''get path from config if any'''
+    misc = conf['misc']
+    if 'minutes path' in misc:
+        return misc['minutes path']
+    else:
+        return None
+
+def get_file(date, path):
     '''returns default file name + path given date(time object)'''
     minutes_file = 'minutes' +  '.' + str(date)
-    if MINUTES_PATH:
-        minutes_file = MINUTES_PATH + '/' + minutes_file
+    if path:
+        minutes_file = path + '/' + minutes_file
     if minutes_file[0:2] == '~/':
         return os.path.expanduser(minutes_file)
     elif minutes_file[0] == '/':
@@ -151,12 +235,6 @@ def get_file(date):
     else:
         return os.path.expanduser('~/' + minutes_file)
 
-
-def load_file(mfile):
-    '''load file contents and return them as string'''
-    with open(mfile,'rU') as f:
-        contents = f.read()
-    return contents
 
 def setup_object(url, user, password):
     '''create request tracker opject and login'''
@@ -166,25 +244,19 @@ def setup_object(url, user, password):
     else:
         return rt_object
 
-def get_rtconf(rtconf):
-    '''get rtconfig'''
-    rturl = 'http://' + rtconf['host'] + '/REST/1.0/'
-    rtuser = rtconf['user']
-    if 'nopassword' in rtconf:
-        rtpass = getpass.getpass('Enter RT password']
-    else:
-        rtpass = get_password('rt', rtuser)
-   return rturl, rtqueue, rtuser, rtpass
+def login_to_rt(url, user, password):
+    '''wrapper for setup_object that verifies user password'''
+    try: 
+        rtobj = setup_object(url, user, password)
+        return rtobj
+    except Error:
+        print('could not log in to RT')
+        password = getpass.getpass('Enter RT password')
+        set_password('rt', user, password)
+        # TODO will this work?? maybe not
+        return login_to_rt(url, user, password)
 
-#TODO IMPLEMENT
-def get_password(section, user):
-    '''get a password from users keyring'''
-    pass
 
-#TODO IMPLEMENT
-def set_password(section, user, password):
-    '''set a password in users keyring'''
-    pass
 
 def match_minutes(subject):
     '''checks to see if subject lines looks like minutes'''
@@ -193,20 +265,6 @@ def match_minutes(subject):
         return True
     else:
         return False
-
-
-def yes_no(warning=None):
-    '''get a yes no answer, true if yes'''
-    print(warning + '[Y/N]?')
-    answer =  sys.stdin.read(1)
-    if answer == 'y' or answer == 'Y':
-        return True
-    elif answer == 'n' or answer == 'N':
-        return False
-    else:
-        print 'please answer y[es] or [n]o'
-        return yes_no(warning)
-
 
 def get_date(when, day):
     '''return the date for n weeks ago'''
@@ -219,14 +277,6 @@ def get_date(when, day):
         # assume a date was specified and just return it
         # should only be the case with late minutes
         return when
-
-def get_minutes_path(config):
-    '''get path form config if any'''
-    misc = config['misc']
-    if 'minutes path' in misc:
-        return misc['minutes path']
-    else:
-        return None
 
 def weeks_ago(weeks, weekdayno):
     '''Return a datetime object that represents the date of the day 
@@ -242,15 +292,82 @@ def weeks_ago(weeks, weekdayno):
     timedelta = datetime.timedelta(days)
     return date - timedelta
 
+def load_file(mfile):
+    '''load file contents and return them as string'''
+    with open(mfile,'rU') as f:
+        contents = f.read()
+    return contents
+
+
+def yes_or_no(warning=None):
+    '''get a yes no answer, true if yes'''
+    print(warning + '[Y/N]?')
+    answer =  sys.stdin.read(1)
+    if answer == 'y' or answer == 'Y':
+        return True
+    elif answer == 'n' or answer == 'N':
+        return False
+    else:
+        print('please answer y[es] or [n]o')
+        return yes_or_no(warning)
+
+
+
 def sysexit(message, exit_value):
+    '''print exit message and exit with exit_value'''
     print(message)
-    sys.exit(exit_val)
+    sys.exit(exit_value)
 
 
-def create_new_minutes_file(path = None):
+def send_email(mailconf, mailto, subject, body):
+    '''sends an email'''
+    mail_host = mailconf['host']
+    if 'requires_ssl' in mailconf:
+        smtp = smtplib.SMTP_SSL(mail_host)
+    else:
+        smtp = smtplib.SMTP(mail_host)
+    if 'requires_ssl' in mailconf:
+        email, password = get_mailconf(mailconf)
+        try:
+            smtp.login(email, password)
+        except smtplib.SMTPAuthenticationError:
+            sysexit('Could not login into the mail server as %s.' 
+                    'You might want to run this program with the' 
+                            '--create-config option to reset them' 
+                            %(email), 1)
+    else:
+        email = mailconf['email']
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = email
+    msg['To'] = mailto
+    msg.add_header('X-Mailer', 'minutes-mailer')
+    msg.add_header('X-Sent-By-Robot', 
+            'The city\'s central computer told you? R2D2, you know \
+                    better than to trust a strange computer!')
+    try:
+        smtp.sendmail(email, mailto, msg.as_string())
+        sent = True
+    except smtplib.SMTPRecipientsRefused:
+        print('could not deliver mail to %s ,recipient refused' %(mailto))
+    except smtplib.SMTPSenderRefused:
+        print('could not deliver mail to %s, sender %s refused'
+                %(mailto, email))
+    except (smtplib.SMTPResponseException, smtplib.SMTPException):
+        print('Something went wrong')
+        print('could not deliver mail to %s' %(mailto))
+        sent = False
+    smtp.quit()
+    if sent == True:
+        return True
+    else:
+        return False
+
+        
+def create_new_minutes_file(conf):
     '''creates a blank minutes file'''
-    day = get_day(config)
-    path  = get_minutes_path(config)
+    day = get_day(conf)
+    path  = get_minutes_path(conf)
     date = get_date('today', day)
     minutes_file = get_file(date, path)
     if not os.path.exists(minutes_file):
@@ -259,8 +376,8 @@ def create_new_minutes_file(path = None):
             print('Created ' + minutes_file)
             return True
         except IOError:
-            error = 'Could not write to '  +  minutes_file
-            sys.exit(error, 73)
+            error_msg = 'Could not write to '  +  minutes_file
+            sys.exit(error_msg, 73)
     else:
         raise Error("Minutes files already exists!", 1)
 
@@ -270,12 +387,12 @@ def send_draught(config, date, mfile=None):
     day = get_day(config)
     path  = get_minutes_path(config)
     date = get_date(date, day)
-    mail=config['mail']
+    mail = config['mail']
     subject = 'DRAFT: Technocrats Minutes ' + str(date)
     if not mfile:
         mfile = get_file(date, path)
     msg = load_file(mfile)
-    if not send_email(mail['host'], mail['email'], mail['queue'], subject, msg):
+    if not send_email(mail, mail['queue'], subject, msg):
         raise Error('Could not send draught minutes', 3)
 
 
@@ -286,7 +403,7 @@ def send_final(config, ticketno, date, mfile=None):
     day = get_day(config)
     path  = get_minutes_path(config)
     rturl, rtqueue, rtuser, rtpass = get_rtconf(rtconf)
-    ticket = setup_object(rturl, rtuser, rtpass)
+    ticket = login_to_rt(rturl, rtuser, rtpass)
     try:
         isvalid = ticket.is_valid_ticket(rtqueue, ticketno)
         if not isvalid:
@@ -296,38 +413,48 @@ def send_final(config, ticketno, date, mfile=None):
             if not match_minutes(subject):
                 print('the subject of ' + str(ticketno) + ' is ' + subject)
                 print("This does not look like the correct  ticket")
-                if not yes_no('Proceed'):
+                if not yes_or_no('Proceed'):
                     raise Error('ticket mismatch, aborting.', 0)
     except:
-        raise('could not connect to RT. \
+        raise Error('could not connect to RT. \
             Check your network connection and try again', 3)
     date = get_date(date, day)
     subject = 'Technocrats Minutes ' + str(date)
     if not mfile:
         mfile = get_file(date, path)
     msg = load_file(mfile)
-    minuteslist = mail['minute list']
-    if not send_email(mail['host'], mail['email'], minuteslist, 
-            subject, msg):
-         raise Error("Could not send email to " + minutelist, 3)
-     else:
-         print('sent minutes to ' + minuteslist)
+    minuteslist = mail['minutes list']
+    if not send_email(mail, minuteslist, subject, msg):
+        raise Error("Could not send email to %s"  %(minuteslist), 3)
+    else:
+        print('sent minutes to %s' %(minuteslist))
     if not ticket.add_comment(ticketno, msg):
-         raise Error ("Could not add minutes to ticket " + ticket no, 3)
-     else:    
+        raise Error("Could not add minutes to ticket " + ticketno, 3)
+    else:    
         print('added  minutes to ticket ' + ticketno)
-    if not ticket.set_status(ticketno, 'resolved')
-         raise Error ("Could resolve ticket " + ticket no, 3)
-     else:    
+    if not ticket.set_status(ticketno, 'resolved'):
+        raise Error("Could resolve ticket " + ticketno, 3)
+    else:    
         print('Resolved ticket ' + ticketno)
         
 
-if __name__ == "__main__":
+def main():
     action, date, minutesfile = read_options()
+    
+    # read in config or create
+    if action == 'create_config':
+        local_config = os.path.expanduser('~/.minutes_mailer')
+        if os.path.isfile(local_config):
+            if not yes_or_no('config already exists. Overwrite'):
+                sysexit('OK then.', 0)
+        create_config(local_config)
+        sysexit('', 0)
+    else:
+        rt_conf, mail_conf, misc_conf = loadconfig()
+
     # load config as dictionaries
-    rt, mail, misc = loadconfig()
-    config = {'rt' : rt , 'mail' : mail, 'misc', misc}
-    if ['minutes path']
+    config = {'rt' : rt_conf , 'mail' : mail_conf, 'misc': misc_conf}
+
     if action == 'new':
         try:
             create_new_minutes_file(config)
@@ -339,14 +466,14 @@ if __name__ == "__main__":
             send_draught(config, date, minutesfile)
         except Error as error:
             sysexit(error.msg, error.exitval)
-        else:
+    else:
         # send final minutes, action should contain ticket number
         try:
             send_final(config, action, date, minutesfile)
         except Error as error:
             sysexit(error.msg, error.exitval)
 
-    sys.exit(0)  
-    
+    sys.exit(0)
 
-
+if __name__ == "__main__":
+    main()
